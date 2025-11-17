@@ -1,0 +1,6 @@
+@ScriptRunner.Service_HostAddress = http://localhost:5147
+
+GET {{ScriptRunner.Service_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

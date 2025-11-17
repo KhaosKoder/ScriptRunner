@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
+    <!-- Reference MinGit in the deployable project; keep it private so it doesn't flow transitively -->
+    <PackageReference Include="Git-Windows-Minimal" Version="2.52.0-rc2" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ScriptRunner.Core\ScriptRunner.Core.csproj" />
+  </ItemGroup>
+
+  <!-- NuGet sets Pkg<Id> property to the resolved package folder (with version). Use it to locate the tools directory. -->
+  <PropertyGroup>
+    <MinGitPackageDir>$(PkgGit_Windows_Minimal)tools\</MinGitPackageDir>
+    <MinGitOutputDir>$(OutDir)Tools\MinGit\</MinGitOutputDir>
+    <MinGitPublishDir>$(PublishDir)Tools\MinGit\</MinGitPublishDir>
+  </PropertyGroup>
+
+  <Target Name="CopyMinGitToOutput" AfterTargets="Build" Condition="Exists('$(MinGitPackageDir)git.exe')">
+    <ItemGroup>
+      <MinGitFiles Include="$(MinGitPackageDir)**\*" />
+    </ItemGroup>
+    <Message Importance="High" Text="Copying MinGit from '$(MinGitPackageDir)' to '$(MinGitOutputDir)'" />
+    <Copy SourceFiles="@(MinGitFiles)"
+          DestinationFiles="@(MinGitFiles->'$(MinGitOutputDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyMinGitToPublish" AfterTargets="Publish" Condition="Exists('$(MinGitPackageDir)git.exe')">
+    <ItemGroup>
+      <MinGitFilesPublish Include="$(MinGitPackageDir)**\*" />
+    </ItemGroup>
+    <Message Importance="High" Text="Copying MinGit to publish folder '$(MinGitPublishDir)'" />
+    <Copy SourceFiles="@(MinGitFilesPublish)"
+          DestinationFiles="@(MinGitFilesPublish->'$(MinGitPublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
