@@ -18,6 +18,19 @@
     <ProjectReference Include="..\ScriptRunner.Core\ScriptRunner.Core.csproj" />
   </ItemGroup>
 
+  <!-- Exclude any accidental source files under Tools/PortableGit from compilation -->
+  <ItemGroup>
+    <Compile Remove="Tools\PortableGit\**\*.cs" />
+  </ItemGroup>
+
+  <!-- Ensure Tools/PortableGit is copied to build and publish outputs (modify default item instead of duplicate include) -->
+  <ItemGroup>
+    <None Update="Tools\PortableGit\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
   <!-- NuGet sets Pkg<Id> property to the resolved package folder (with version). Use it to locate the tools directory. -->
   <PropertyGroup>
     <MinGitPackageDir>$(PkgGit_Windows_Minimal)tools\</MinGitPackageDir>
