@@ -513,6 +513,16 @@ Require(app.MapGet("/api/history/{executionId}/output", async (Guid executionId,
     return Results.File(System.Text.Encoding.UTF8.GetBytes(full), "text/plain", $"{executionId}-output.txt");
 }), "CanView");
 
+// History detail by script id (filtered)
+Require(app.MapGet("/api/history/script/{scriptId}", async (string scriptId, IExecutionHistoryStore history, HttpContext http, CancellationToken ct) =>
+{
+    var trace = GetTraceId(http);
+    var all = await history.QueryAsync(500, ct); // larger take for per-script view
+    var filtered = all.Where(r => r.ScriptId.Equals(scriptId, StringComparison.OrdinalIgnoreCase)).OrderByDescending(r => r.StartedAtUtc).ToList();
+    logger.LogInformation("[API] GET /api/history/script/{ScriptId} -> {Count} traceId={TraceId}", scriptId, filtered.Count, trace);
+    return Results.Ok(filtered);
+}), "CanView");
+
 app.Run();
 
 static string Truncate(string value, int max)
