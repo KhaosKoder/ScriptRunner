@@ -2,6 +2,8 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using ScriptRunner.Core.Storage;
 using ScriptRunner.Core.Configuration;
+using System.Globalization;
+using System.Text;
 
 namespace ScriptRunner.Core.Execution;
 
@@ -20,7 +22,6 @@ public sealed class SimpleScriptExecutor : IScriptExecutor, IPowerShellExecutor
 
     public Task<ScriptExecutionResult> ExecuteAsync(ScriptMetadata metadata, IDictionary<string, object?> parameters, string ranByUser, CancellationToken ct = default)
     {
-        // Delegate based on script type using provided temp path
         if (metadata.IsSql)
         {
             return Task.FromResult(new ScriptExecutionResult { ExitCode = -1, StdOut = string.Empty, StdErr = "SQL executor not implemented here", Status = ScriptExecutionStatus.Failed });
@@ -38,16 +39,25 @@ public sealed class SimpleScriptExecutor : IScriptExecutor, IPowerShellExecutor
         try
         {
             var shellPath = ResolvePowerShellPath();
-            var psi = new ProcessStartInfo
+            var psi = new ProcessStartInfo(shellPath)
             {
-                FileName = shellPath,
-                Arguments = BuildArguments(shellPath, scriptPath, metadata, parameters),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            _logger.LogInformation("[PS] Executing script path={Path} shell={Shell} with {ParamCount} parameters", scriptPath, shellPath, metadata.Parameters.Count);
+
+            // Build a single -Command with invocation expression: & 'script.ps1' -Name 'value' -Bool:$false
+            var command = BuildPowerShellCommand(scriptPath, metadata, parameters);
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-ExecutionPolicy");
+            psi.ArgumentList.Add("Bypass");
+            psi.ArgumentList.Add("-Command");
+            psi.ArgumentList.Add(command);
+
+            var manualCmd = '"' + shellPath + '"' + " -NoProfile -ExecutionPolicy Bypass -Command " + QuoteForCmd(command);
+            _logger.LogInformation("[PS] Executing via -Command keepTemp={Keep}\n[PS] ManualCommand (copy/paste):\n{Manual}", _options.KeepTempScripts, manualCmd);
+
             using var proc = Process.Start(psi)!;
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             var stderrTask = proc.StandardError.ReadToEndAsync();
@@ -69,9 +79,87 @@ public sealed class SimpleScriptExecutor : IScriptExecutor, IPowerShellExecutor
         }
         finally
         {
-            // Ensure deletion of the passed-in temp file and its directory
-            _tempStorage.DeleteTempPath(scriptPath);
+            if (!_options.KeepTempScripts)
+            {
+                _tempStorage.DeleteTempPath(scriptPath);
+            }
+            else
+            {
+                _logger.LogInformation("[PS] Keeping temp script for debugging: {Path}", scriptPath);
+            }
         }
+    }
+
+    private string BuildPowerShellCommand(string scriptPath, ScriptMetadata metadata, IDictionary<string, object?> parameters)
+    {
+        var sb = new StringBuilder();
+        sb.Append("& ").Append(Sq(scriptPath));
+        foreach (var def in metadata.Parameters)
+        {
+            if (def.Name.StartsWith("__")) continue;
+            if (!parameters.TryGetValue(def.Name, out var raw) || raw is null) continue;
+            switch (def.Type)
+            {
+                case ScriptParameterType.Bool:
+                    var b = CoerceBool(raw);
+                    sb.Append(' ').Append('-').Append(def.Name).Append(':').Append(b ? "$true" : "$false");
+                    break;
+                case ScriptParameterType.Int:
+                    var i = CoerceInt(raw);
+                    sb.Append(' ').Append('-').Append(def.Name).Append(' ').Append(i.ToString(CultureInfo.InvariantCulture));
+                    break;
+                case ScriptParameterType.Decimal:
+                    var d = CoerceDecimal(raw);
+                    sb.Append(' ').Append('-').Append(def.Name).Append(' ').Append(d.ToString(CultureInfo.InvariantCulture));
+                    break;
+                case ScriptParameterType.DateTime:
+                    var dt = CoerceDateTime(raw);
+                    sb.Append(' ').Append('-').Append(def.Name).Append(' ').Append(Sq(dt.ToString("o")));
+                    break;
+                default:
+                    var s = raw.ToString() ?? string.Empty;
+                    sb.Append(' ').Append('-').Append(def.Name).Append(' ').Append(Sq(s));
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string Sq(string v) => "'" + v.Replace("'", "''") + "'";
+    private static string QuoteForCmd(string v)
+    {
+        // Wrap -Command payload for cmd.exe and powershell.exe invocation: use double quotes, escape embedded quotes
+        return '"' + v.Replace("\"", "\\\"") + '"';
+    }
+
+    private static bool CoerceBool(object raw)
+    {
+        if (raw is bool b) return b;
+        if (raw is string s)
+        {
+            if (bool.TryParse(s, out var parsed)) return parsed;
+            if (s.Equals("1") || s.Equals("yes", StringComparison.OrdinalIgnoreCase) || s.Equals("on", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.Equals("0") || s.Equals("no", StringComparison.OrdinalIgnoreCase) || s.Equals("off", StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        try { return Convert.ToBoolean(raw); } catch { return false; }
+    }
+    private static int CoerceInt(object raw)
+    {
+        if (raw is int i) return i;
+        if (raw is string s && int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+        try { return Convert.ToInt32(raw, CultureInfo.InvariantCulture); } catch { return 0; }
+    }
+    private static decimal CoerceDecimal(object raw)
+    {
+        if (raw is decimal d) return d;
+        if (raw is string s && decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+        try { return Convert.ToDecimal(raw, CultureInfo.InvariantCulture); } catch { return 0m; }
+    }
+    private static DateTime CoerceDateTime(object raw)
+    {
+        if (raw is DateTime dt) return dt;
+        if (raw is string s && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed)) return parsed;
+        try { return Convert.ToDateTime(raw, CultureInfo.InvariantCulture); } catch { return DateTime.UtcNow; }
     }
 
     private string ResolvePowerShellPath()
@@ -80,19 +168,15 @@ public sealed class SimpleScriptExecutor : IScriptExecutor, IPowerShellExecutor
         {
             return _options.PowerShellPath;
         }
-        // Prefer pwsh if available
         var pwsh = FindOnPath("pwsh.exe");
         if (!string.IsNullOrEmpty(pwsh)) return pwsh;
-        // Fall back to Windows PowerShell if allowed and on Windows
         if (OperatingSystem.IsWindows() && _options.FallbackToWindowsPowerShell)
         {
             var winPs = FindOnPath("powershell.exe");
             if (!string.IsNullOrEmpty(winPs)) return winPs;
-            // Typical system32 path as last resort
             var sys = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
             if (File.Exists(sys)) return sys;
         }
-        // Non-Windows or no PS found
         throw new FileNotFoundException("No PowerShell executable found. Install PowerShell 7 (pwsh) or enable fallback to powershell.exe.");
     }
 
@@ -110,40 +194,4 @@ public sealed class SimpleScriptExecutor : IScriptExecutor, IPowerShellExecutor
         }
         return null;
     }
-
-    private static string BuildArguments(string shellPath, string path, ScriptMetadata metadata, IDictionary<string, object?> parameters)
-    {
-        var args = new List<string>();
-        var isPwsh = Path.GetFileName(shellPath).Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(shellPath).Equals("pwsh", StringComparison.OrdinalIgnoreCase);
-        if (isPwsh)
-        {
-            args.AddRange(new[]{"-NoProfile","-ExecutionPolicy","Bypass","-File", Quote(path) });
-        }
-        else
-        {
-            // Windows PowerShell
-            args.AddRange(new[]{"-NoProfile","-ExecutionPolicy","Bypass","-File", Quote(path) });
-        }
-        foreach (var def in metadata.Parameters)
-        {
-            if (def.Name.StartsWith("__")) continue;
-            if (!parameters.TryGetValue(def.Name, out var val)) continue;
-            var str = FormatValue(val, def.Type);
-            args.Add("-" + def.Name);
-            args.Add(Quote(str));
-        }
-        return string.Join(' ', args);
-    }
-
-    private static string FormatValue(object? value, ScriptParameterType type)
-    {
-        return type switch
-        {
-            ScriptParameterType.Bool => (value is bool b) ? (b ? "$true" : "$false") : (value?.ToString()?.Equals("true", StringComparison.OrdinalIgnoreCase) == true ? "$true" : "$false"),
-            ScriptParameterType.DateTime => value is DateTime dt ? dt.ToString("o") : value?.ToString() ?? string.Empty,
-            _ => value?.ToString() ?? string.Empty
-        };
-    }
-
-    private static string Quote(string v) => '"' + v.Replace("\"", "\\\"") + '"';
 }

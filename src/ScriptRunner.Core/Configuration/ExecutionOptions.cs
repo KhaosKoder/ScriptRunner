@@ -9,4 +9,7 @@ public sealed class ExecutionOptions
     public string? PowerShellPath { get; set; }
     // When true (default), fall back to Windows PowerShell (powershell.exe) if pwsh is not available on Windows
     public bool FallbackToWindowsPowerShell { get; set; } = true;
+
+    // New: keep temp scripts after execution for debugging
+    public bool KeepTempScripts { get; set; } = false;
 }

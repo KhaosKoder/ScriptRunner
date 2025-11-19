@@ -134,7 +134,8 @@ builder.Services.AddSingleton<IScriptParser, ScriptMetadataParser>();
 // Choose script provider based on environment and MinGit presence
 bool minGitPresent = (!string.IsNullOrWhiteSpace(repoOptions.MinGitPath) && File.Exists(repoOptions.MinGitPath))
                      || File.Exists(Path.Combine(AppContext.BaseDirectory, "git.exe"))
-                     || File.Exists(Path.Combine(AppContext.BaseDirectory, "Tools", "MinGit", "git.exe"));
+                     || File.Exists(Path.Combine(AppContext.BaseDirectory, "Tools", "MinGit", "git.exe"))
+                     || File.Exists(Path.Combine(AppContext.BaseDirectory, "Tools", "PortableGit", "cmd", "git.exe"));
 if (isDev && !minGitPresent)
 {
     builder.Services.AddSingleton<IScriptProvider, InMemoryScriptProvider>();
@@ -249,6 +250,37 @@ string GetTraceId(HttpContext http)
     return http.TraceIdentifier;
 }
 
+// Normalizes JsonElement values into primitive CLR types for validation/parameter coercion
+static object? NormalizeJson(object? value)
+{
+    if (value is JsonElement je)
+    {
+        switch (je.ValueKind)
+        {
+            case JsonValueKind.True: return true;
+            case JsonValueKind.False: return false;
+            case JsonValueKind.Number:
+                if (je.TryGetInt64(out var l)) return l;
+                if (je.TryGetDouble(out var d)) return d;
+                return je.GetRawText();
+            case JsonValueKind.String:
+                return je.GetString();
+            case JsonValueKind.Null:
+            case JsonValueKind.Undefined:
+                return null;
+            case JsonValueKind.Array:
+                var list = new List<object?>();
+                foreach (var el in je.EnumerateArray()) list.Add(NormalizeJson(el));
+                return list;
+            case JsonValueKind.Object:
+                var dict = new Dictionary<string, object?>();
+                foreach (var prop in je.EnumerateObject()) dict[prop.Name] = NormalizeJson(prop.Value);
+                return dict;
+        }
+    }
+    return value;
+}
+
 // Script list & metadata
 Require(app.MapGet("/api/scripts", async (IScriptProvider provider, HttpContext http, CancellationToken ct) =>
 {
@@ -312,7 +344,7 @@ Require(app.MapPost("/api/scripts/{id}/execute", async (
     }
 
     var ranBy = http.User.Identity?.Name ?? "unknown";
-    var parameters = body ?? new Dictionary<string, object?>();
+    var parameters = body != null ? body.ToDictionary(kv => kv.Key, kv => NormalizeJson(kv.Value)) : new Dictionary<string, object?>();
 
     // Log provided parameters safely (truncate values)
     var safeParams = parameters.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString() is string s ? (s.Length > 200 ? s.Substring(0, 200) + "..." : s) : kv.Value);
